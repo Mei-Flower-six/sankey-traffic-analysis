@@ -185,13 +185,13 @@ def read_excel_generate_data(excel_path):
     except Exception as e:
         logger.error(f"读取Excel失败：{str(e)}")
         st.error(f"❌ 读取Excel失败：{str(e)}")
-        return []
+        return pd.DataFrame()  # 修改：返回空DataFrame，方便后续处理
     
     # 数据预处理
     df["时间_str"] = df["时间"].astype(str)
     df["date"] = df["时间_str"].str.split(" ").str[0].str.replace("/", "-")
     df["date"] = df["date"].replace(["nan", "NaT", ""], pd.NaT)
-    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")  # 保留datetime类型，方便后续提取最值
     
     data_raw = []
     for _, row in df.iterrows():
@@ -212,7 +212,7 @@ def read_excel_generate_data(excel_path):
             logger.warning(f"非法站点：{cfg['site']}（流量类型：{traffic_type}，已跳过）")
             continue
         
-        date = row["date"]
+        date = row["date"].strftime("%Y-%m-%d")  # 后续存储用字符串格式
         exposure = pd.to_numeric(row["曝光"], errors="coerce") if pd.notna(row["曝光"]) else 0.0
         click = pd.to_numeric(row["点击"], errors="coerce") if pd.notna(row["点击"]) else 0.0
         sales = pd.to_numeric(row["销量"], errors="coerce") if pd.notna(row["销量"]) else 0.0
@@ -229,20 +229,55 @@ def read_excel_generate_data(excel_path):
             [cfg["nodes"]["level2_sales"], "总销量", float(sales), date, cfg["group_id"], traffic_type]
         ])
     
-    logger.info(f"生成链路数据条数：{len(data_raw)}")
-    return data_raw
+    # 转换为DataFrame返回，方便同时获取原始数据和日期范围
+    result_df = pd.DataFrame(data_raw, columns=["source", "target", "value", "date", "group", "traffic_type"])
+    if not result_df.empty:
+        result_df["date"] = pd.to_datetime(result_df["date"])
+        result_df["value"] = pd.to_numeric(result_df["value"], errors="coerce").fillna(0.0)
+    logger.info(f"生成链路数据条数：{len(result_df)}")
+    return result_df
 
 # ===================== 4. 应用标题 =====================
 st.title("🌐 多站点流量-销量桑基图分析")
 st.markdown("---")
 
-# ===================== 5. 侧边栏控制面板 =====================
+# ===================== 5. 先处理文件上传和数据加载（关键修改：提前加载数据提取日期） =====================
+default_excel_path = "1.5-1.19流量数据统计.xlsx"
+df = pd.DataFrame()
+
 with st.sidebar:
     st.header("⚙️ 控制面板")
-    
     # 文件上传
     uploaded_file = st.file_uploader("上传Excel文件", type=["xlsx", "xls"])
-    
+
+# 确定Excel文件路径并加载数据
+if uploaded_file is not None:
+    EXCEL_PATH = uploaded_file
+    df = read_excel_generate_data(EXCEL_PATH)
+    st.sidebar.success(f"📂 已上传文件: {uploaded_file.name}")
+else:
+    # 否则使用默认文件（本地测试时）
+    try:
+        df = read_excel_generate_data(default_excel_path)
+        st.sidebar.info(f"📂 使用默认文件: {default_excel_path}")
+    except Exception as e:
+        st.sidebar.error(f"❌ 默认文件加载失败: {str(e)}")
+
+# 提取Excel中的实际有效日期范围（关键修改：自动获取日期最值）
+default_start_date = datetime.strptime("2026-01-05", "%Y-%m-%d").date()
+default_end_date = datetime.strptime("2026-01-19", "%Y-%m-%d").date()
+
+if not df.empty and df["date"].notna().any():
+    min_date = df["date"].min()
+    max_date = df["date"].max()
+    default_start_date = min_date.date()  # 转换为date类型，适配streamlit date_input
+    default_end_date = max_date.date()
+    logger.info(f"自动提取Excel日期范围：{default_start_date} 至 {default_end_date}")
+else:
+    logger.warning("未提取到有效日期，使用兜底默认值")
+
+# ===================== 6. 继续渲染侧边栏其他控件（使用自动提取的日期作为默认值） =====================
+with st.sidebar:
     # 搜索区域
     search_keyword = st.text_input(
         "🔍 链路搜索（支持站点/流量类型关键词）",
@@ -260,21 +295,20 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📅 日期范围")
     
-    # 日期输入
-    default_start = "2026-01-05"
-    default_end = "2026-01-19"
-    
+    # 日期输入（关键修改：使用自动提取的日期作为默认值）
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input(
             "开始日期",
-            value=datetime.strptime(default_start, "%Y-%m-%d").date()
+            value=default_start_date,  # 自动提取的最小日期
+            help="默认显示Excel中的最早日期"
         )
     
     with col2:
         end_date = st.date_input(
             "结束日期",
-            value=datetime.strptime(default_end, "%Y-%m-%d").date()
+            value=default_end_date,  # 自动提取的最大日期
+            help="默认显示Excel中的最晚日期"
         )
     
     # 日期验证
@@ -310,37 +344,12 @@ with st.sidebar:
     st.markdown("---")
     st.info("💡 提示：点击图表节点可以查看详细信息")
 
-# ===================== 6. 数据初始化 =====================
-# 确定Excel文件路径
-if uploaded_file is not None:
-    # 如果有上传的文件，使用上传的文件
-    EXCEL_PATH = uploaded_file
-    st.success(f"📂 已上传文件: {uploaded_file.name}")
-else:
-    # 否则使用默认文件（本地测试时）
-    EXCEL_PATH = "1.5-1.19流量数据统计.xlsx"
-
-# 加载数据
-try:
-    data_raw = read_excel_generate_data(EXCEL_PATH)
-    
-    # 转换为DataFrame
-    df = pd.DataFrame(data_raw, columns=["source", "target", "value", "date", "group", "traffic_type"])
-    df["date"] = pd.to_datetime(df["date"])
-    df["value"] = pd.to_numeric(df["value"], errors="coerce").fillna(0.0)
-    
-    # 更新默认日期范围
-    if df["date"].notna().any():
-        default_start = df["date"].min().strftime("%Y-%m-%d")
-        default_end = df["date"].max().strftime("%Y-%m-%d")
-    
-    logger.info(f"有效日期范围：{default_start} 至 {default_end}")
-    
-except Exception as e:
-    st.error(f"❌ 数据加载失败: {str(e)}")
+# ===================== 7. 数据验证和后续处理 =====================
+if df.empty:
+    st.error("❌ 无有效数据可展示，请上传正确的Excel文件")
     st.stop()
 
-# ===================== 7. 数据筛选和处理 =====================
+# ===================== 8. 数据筛选和处理 =====================
 # 显示数据摘要
 with st.expander("📊 数据摘要", expanded=True):
     col1, col2, col3, col4 = st.columns(4)
@@ -368,7 +377,7 @@ filtered_df = df[(df["date"] >= start_date_dt) & (df["date"] <= end_date_dt)]
 aggregated_df = filtered_df.groupby(["source", "target", "group", "traffic_type"], as_index=False)["value"].sum()
 aggregated_df = aggregated_df[aggregated_df["value"] > 0]
 
-# ===================== 8. 生成节点列表 =====================
+# ===================== 9. 生成节点列表 =====================
 # 拆分流量类型为Amazon组和Shopify组
 Amazon_TRAFFIC = [t for t in TRAFFIC_ORDER if TRAFFIC_MAPPING[t]["site"] == "Amazon-US"]
 Shopify_TRAFFIC = [t for t in TRAFFIC_ORDER if TRAFFIC_MAPPING[t]["site"] == "Shopify"]
@@ -418,7 +427,7 @@ all_nodes = (
 
 node_ids = {node: idx for idx, node in enumerate(all_nodes)}
 
-# ===================== 9. 节点统计 =====================
+# ===================== 10. 节点统计 =====================
 node_stats = {}
 for node in all_nodes:
     incoming = aggregated_df[aggregated_df["target"] == node]["value"].sum()
@@ -459,7 +468,7 @@ for node in all_nodes:
     
     node_customdata.append((incoming, outgoing, ratio))
 
-# ===================== 10. 搜索关键词匹配 =====================
+# ===================== 11. 搜索关键词匹配 =====================
 search_keyword = search_keyword.strip().lower() if isinstance(search_keyword, str) else ""
 matched_traffic_types = []
 
@@ -491,7 +500,7 @@ for traffic_type in matched_traffic_types:
     ])
 matched_nodes = list(set(matched_nodes))
 
-# ===================== 11. 生成链路 =====================
+# ===================== 12. 生成链路 =====================
 total_incoming = aggregated_df.groupby("target")["value"].sum().to_dict()
 exposure_link = [
     (s, TRAFFIC_MAPPING[s]["nodes"]["exposure"]) for s in TRAFFIC_ORDER
@@ -531,7 +540,7 @@ for _, row in aggregated_df.iterrows():
     link_colors.append(final_color)
     link_customdata.append([source, target, original_val, ratio])
 
-# ===================== 12. 节点颜色 =====================
+# ===================== 13. 节点颜色 =====================
 node_color_list = []
 for node in all_nodes:
     if node in matched_nodes:
@@ -547,7 +556,7 @@ for node in all_nodes:
         node_color = "rgba(200, 200, 200, 0.2)"
     node_color_list.append(node_color)
 
-# ===================== 13. 绘制桑基图 =====================
+# ===================== 14. 绘制桑基图 =====================
 fig = go.Figure(data=[go.Sankey(
     node=dict(
         pad=20,
@@ -585,7 +594,7 @@ fig.update_layout(
 # 显示图表
 st.plotly_chart(fig, use_container_width=True, height=800)
 
-# ===================== 14. 数据显示区域 =====================
+# ===================== 15. 数据显示区域 =====================
 with st.expander("📋 查看详细数据"):
     tab1, tab2, tab3 = st.tabs(["原始数据", "流量类型统计", "站点统计"])
     
@@ -609,13 +618,7 @@ with st.expander("📋 查看详细数据"):
         st.write(f"\n**流量类型总数:** {len(TRAFFIC_ORDER)}")
         st.write(f"**匹配的流量类型:** {len(matched_traffic_types)}")
 
-# ===================== 15. 页脚信息 =====================
+# ===================== 16. 页脚信息 =====================
 st.markdown("---")
 st.caption(f"📅 数据更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-st.caption("💡 提示：修改Excel文件后，重新上传即可更新图表")
-
-# ===================== 16. 运行应用 =====================
-if __name__ == '__main__':
-    # 在本地运行Streamlit应用
-    # 命令行运行: streamlit run sankey_traffic_streamlit.py
-    pass
+st.caption("💡 提示：修改Excel文件后，重新上传即可更新图表和默认日期范围")
