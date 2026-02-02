@@ -4,14 +4,22 @@ import plotly.graph_objects as go
 import logging
 import streamlit as st
 from datetime import datetime
+import os
+from io import BytesIO
 
-# ===================== 1. 页面配置 =====================
+# ===================== 1. 页面配置 + Session State初始化 =====================
 st.set_page_config(
     page_title="多站点流量-销量桑基图分析",
     page_icon="🌐",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# 初始化Session State
+if "search_keyword" not in st.session_state:
+    st.session_state.search_keyword = ""
+if "search_input" not in st.session_state:
+    st.session_state.search_input = ""
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -175,17 +183,33 @@ for traffic_type in TRAFFIC_MAPPING:
 # 无效流量类型过滤列表
 INVALID_TRAFFIC_TYPES = ["Amazon 页面总点击", "总曝光", "总点击", "总销量"]
 
-# ===================== 3. 读取Excel函数 =====================
+# ===================== 3. 读取Excel函数（支持本地文件和上传文件） =====================
 @st.cache_data
-def read_excel_generate_data(excel_path):
+def read_excel_generate_data(file_input):
+    """
+    读取Excel数据并生成桑基图所需格式
+    
+    参数:
+    file_input: 可以是文件路径字符串，也可以是UploadedFile对象
+    """
     try:
-        df = pd.read_excel(excel_path)
-        logger.info(f"成功读取Excel文件，数据行数：{len(df)}")
-        st.success(f"✅ 成功读取Excel文件，数据行数：{len(df)}")
+        # 判断输入类型
+        if isinstance(file_input, str):
+            # 如果是字符串，认为是文件路径
+            df = pd.read_excel(file_input, engine='openpyxl')
+            logger.info(f"成功从文件路径读取Excel，数据行数：{len(df)}")
+            st.success(f"✅ 成功读取Excel文件，数据行数：{len(df)}")
+        else:
+            # 如果是UploadedFile对象，需要先读取为字节流
+            bytes_data = file_input.getvalue()
+            df = pd.read_excel(BytesIO(bytes_data), engine='openpyxl')
+            logger.info(f"成功从上传文件读取Excel，数据行数：{len(df)}")
+            st.success(f"✅ 成功读取上传的Excel文件，数据行数：{len(df)}")
+        
     except Exception as e:
         logger.error(f"读取Excel失败：{str(e)}")
         st.error(f"❌ 读取Excel失败：{str(e)}")
-        return pd.DataFrame()  # 修改：返回空DataFrame，方便后续处理
+        return pd.DataFrame()  # 返回空DataFrame，方便后续处理
     
     # 数据预处理
     df["时间_str"] = df["时间"].astype(str)
@@ -241,29 +265,33 @@ def read_excel_generate_data(excel_path):
 st.title("🌐 多站点流量-销量桑基图分析")
 st.markdown("---")
 
-# ===================== 5. 先处理文件上传和数据加载（关键修改：提前加载数据提取日期） =====================
+# ===================== 5. 文件上传和数据加载 =====================
 default_excel_path = "1.5-1.19流量数据统计.xlsx"
 df = pd.DataFrame()
 
 with st.sidebar:
     st.header("⚙️ 控制面板")
     # 文件上传
-    uploaded_file = st.file_uploader("上传Excel文件", type=["xlsx", "xls"])
+    uploaded_file = st.file_uploader("上传Excel文件", type=["xlsx", "xls"], 
+                                     help="上传流量数据Excel文件，如果不上传将使用默认文件")
 
 # 确定Excel文件路径并加载数据
 if uploaded_file is not None:
-    EXCEL_PATH = uploaded_file
-    df = read_excel_generate_data(EXCEL_PATH)
+    # 使用上传的文件
+    df = read_excel_generate_data(uploaded_file)
     st.sidebar.success(f"📂 已上传文件: {uploaded_file.name}")
 else:
-    # 否则使用默认文件（本地测试时）
+    # 否则使用默认文件
     try:
-        df = read_excel_generate_data(default_excel_path)
-        st.sidebar.info(f"📂 使用默认文件: {default_excel_path}")
+        if os.path.exists(default_excel_path):
+            df = read_excel_generate_data(default_excel_path)
+            st.sidebar.info(f"📂 使用默认文件: {default_excel_path}")
+        else:
+            st.sidebar.warning("⚠️ 未找到默认Excel文件，请上传文件")
     except Exception as e:
         st.sidebar.error(f"❌ 默认文件加载失败: {str(e)}")
 
-# 提取Excel中的实际有效日期范围（关键修改：自动获取日期最值）
+# 提取Excel中的实际有效日期范围
 default_start_date = datetime.strptime("2026-01-05", "%Y-%m-%d").date()
 default_end_date = datetime.strptime("2026-01-19", "%Y-%m-%d").date()
 
@@ -276,38 +304,46 @@ if not df.empty and df["date"].notna().any():
 else:
     logger.warning("未提取到有效日期，使用兜底默认值")
 
-# ===================== 6. 继续渲染侧边栏其他控件（使用自动提取的日期作为默认值） =====================
+# ===================== 6. 侧边栏控件（修复Session State管理 - 简化版本） =====================
 with st.sidebar:
-    # 搜索区域
-    search_keyword = st.text_input(
+    st.markdown("---")
+    
+    # 搜索区域：使用一个Session State变量简化管理
+    search_input = st.text_input(
         "🔍 链路搜索（支持站点/流量类型关键词）",
+        value=st.session_state.search_keyword,  # 直接使用search_keyword
         placeholder="输入关键词（如US/Shopify/DSP/站内）",
         help="支持站点、流量类型关键词搜索"
     )
     
-    # 清空搜索按钮
+    # 更新Session State
+    if search_input != st.session_state.search_keyword:
+        st.session_state.search_keyword = search_input
+    
+    # 清空搜索按钮 - 简化修复版本
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🗑️ 清空搜索", type="secondary", use_container_width=True):
-            search_keyword = ""
-            st.rerun()
+            # 只清空search_keyword
+            st.session_state.search_keyword = ""
+            st.rerun()  # 刷新页面
     
     st.markdown("---")
     st.subheader("📅 日期范围")
     
-    # 日期输入（关键修改：使用自动提取的日期作为默认值）
+    # 日期输入
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input(
             "开始日期",
-            value=default_start_date,  # 自动提取的最小日期
+            value=default_start_date,
             help="默认显示Excel中的最早日期"
         )
     
     with col2:
         end_date = st.date_input(
             "结束日期",
-            value=default_end_date,  # 自动提取的最大日期
+            value=default_end_date,
             help="默认显示Excel中的最晚日期"
         )
     
@@ -469,6 +505,8 @@ for node in all_nodes:
     node_customdata.append((incoming, outgoing, ratio))
 
 # ===================== 11. 搜索关键词匹配 =====================
+# 从Session State读取搜索关键词
+search_keyword = st.session_state.get("search_keyword", "")
 search_keyword = search_keyword.strip().lower() if isinstance(search_keyword, str) else ""
 matched_traffic_types = []
 
