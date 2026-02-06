@@ -4,22 +4,14 @@ import plotly.graph_objects as go
 import logging
 import streamlit as st
 from datetime import datetime
-import os
-from io import BytesIO
 
-# ===================== 1. 页面配置 + Session State初始化 =====================
+# ===================== 1. 页面配置 =====================
 st.set_page_config(
     page_title="多站点流量-销量桑基图分析",
     page_icon="🌐",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# 初始化Session State
-if "search_keyword" not in st.session_state:
-    st.session_state.search_keyword = ""
-if "search_input" not in st.session_state:
-    st.session_state.search_input = ""
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -38,10 +30,11 @@ TRAFFIC_ORDER = [
     "Amazon-DSP",       # 2
     "Amazon自然流量",   # 3
     "Amazon-FB",        # 4
-    "SP-GG",            # 5
-    "SP-FB",            # 6
-    "SP-自然",          # 7
-    "SP-其他"           # 8
+    "Amazon页面总点击", # 5 新增：Amazon页面总点击链路
+    "SP-GG",            # 6
+    "SP-FB",            # 7
+    "SP-自然",          # 8
+    "SP-其他"           # 9
 ]
 
 TRAFFIC_MAPPING = {
@@ -93,8 +86,21 @@ TRAFFIC_MAPPING = {
             "level2_sales": "Amazon-US销量"
         }
     },
-    "SP-GG": {
+    # 新增：Amazon页面总点击配置
+    "Amazon页面总点击": {
         "group_id": "组5",
+        "site": "Amazon-US",
+        "nodes": {
+            "exposure": "Amazon页面总点击曝光",
+            "level2_exposure": "Amazon-US曝光",
+            "click": "Amazon页面总点击",
+            "level2_click": "Amazon-US点击",
+            "sales": "Amazon页面总点击销量",
+            "level2_sales": "Amazon-US销量"
+        }
+    },
+    "SP-GG": {
+        "group_id": "组6",
         "site": "Shopify",
         "nodes": {
             "exposure": "SP-GG曝光",
@@ -106,7 +112,7 @@ TRAFFIC_MAPPING = {
         }
     },
     "SP-FB": {
-        "group_id": "组6",
+        "group_id": "组7",
         "site": "Shopify",
         "nodes": {
             "exposure": "SP-FB曝光",
@@ -118,7 +124,7 @@ TRAFFIC_MAPPING = {
         }
     },
     "SP-自然": {
-        "group_id": "组7",
+        "group_id": "组8",
         "site": "Shopify",
         "nodes": {
             "exposure": "SP-自然曝光",
@@ -130,7 +136,7 @@ TRAFFIC_MAPPING = {
         }
     },
     "SP-其他": {
-        "group_id": "组8",
+        "group_id": "组9",
         "site": "Shopify",
         "nodes": {
             "exposure": "SP-其他曝光",
@@ -148,10 +154,11 @@ GROUP_COLORS = {
     "组2": "#4ECDC4",  # DSP
     "组3": "#45B7D1",  # 自然流量
     "组4": "#96CEB4",  # FB
-    "组5": "#FFA726",  # SP-GG
-    "组6": "#AB47BC",  # SP-FB
-    "组7": "#1C363F",  # SP-自然
-    "组8": "#F00B0B",  # SP-其他
+    "组5": "#6FA8DC",  # 新增：Amazon页面总点击（蓝色系，匹配Amazon站点）
+    "组6": "#FFA726",  # SP-GG
+    "组7": "#AB47BC",  # SP-FB
+    "组8": "#1C363F",  # SP-自然
+    "组9": "#F00B0B",  # SP-其他
     **{site: SITE_CONFIG[site]["color"] for site in SITE_CONFIG},
     "总节点": "lightgray"
 }
@@ -180,32 +187,16 @@ for traffic_type in TRAFFIC_MAPPING:
     for node in unique_nodes:
         NODE_TO_TRAFFIC[node] = traffic_type
 
-# 无效流量类型过滤列表
-INVALID_TRAFFIC_TYPES = ["Amazon 页面总点击", "总曝光", "总点击", "总销量"]
+# 无效流量类型过滤列表（已移除"Amazon页面总点击"）
+INVALID_TRAFFIC_TYPES = ["总曝光", "总点击", "总销量"]
 
-# ===================== 3. 读取Excel函数（支持本地文件和上传文件） =====================
+# ===================== 3. 读取Excel函数 =====================
 @st.cache_data
-def read_excel_generate_data(file_input):
-    """
-    读取Excel数据并生成桑基图所需格式
-    
-    参数:
-    file_input: 可以是文件路径字符串，也可以是UploadedFile对象
-    """
+def read_excel_generate_data(excel_path):
     try:
-        # 判断输入类型
-        if isinstance(file_input, str):
-            # 如果是字符串，认为是文件路径
-            df = pd.read_excel(file_input, engine='openpyxl')
-            logger.info(f"成功从文件路径读取Excel，数据行数：{len(df)}")
-            st.success(f"✅ 成功读取Excel文件，数据行数：{len(df)}")
-        else:
-            # 如果是UploadedFile对象，需要先读取为字节流
-            bytes_data = file_input.getvalue()
-            df = pd.read_excel(BytesIO(bytes_data), engine='openpyxl')
-            logger.info(f"成功从上传文件读取Excel，数据行数：{len(df)}")
-            st.success(f"✅ 成功读取上传的Excel文件，数据行数：{len(df)}")
-        
+        df = pd.read_excel(excel_path)
+        logger.info(f"成功读取Excel文件，数据行数：{len(df)}")
+        st.success(f"✅ 成功读取Excel文件，数据行数：{len(df)}")
     except Exception as e:
         logger.error(f"读取Excel失败：{str(e)}")
         st.error(f"❌ 读取Excel失败：{str(e)}")
@@ -265,33 +256,29 @@ def read_excel_generate_data(file_input):
 st.title("🌐 多站点流量-销量桑基图分析")
 st.markdown("---")
 
-# ===================== 5. 文件上传和数据加载 =====================
+# ===================== 5. 先处理文件上传和数据加载（关键修改：提前加载数据提取日期） =====================
 default_excel_path = "1.5-1.19流量数据统计.xlsx"
 df = pd.DataFrame()
 
 with st.sidebar:
     st.header("⚙️ 控制面板")
     # 文件上传
-    uploaded_file = st.file_uploader("上传Excel文件", type=["xlsx", "xls"], 
-                                     help="上传流量数据Excel文件，如果不上传将使用默认文件")
+    uploaded_file = st.file_uploader("上传Excel文件", type=["xlsx", "xls"])
 
 # 确定Excel文件路径并加载数据
 if uploaded_file is not None:
-    # 使用上传的文件
-    df = read_excel_generate_data(uploaded_file)
+    EXCEL_PATH = uploaded_file
+    df = read_excel_generate_data(EXCEL_PATH)
     st.sidebar.success(f"📂 已上传文件: {uploaded_file.name}")
 else:
-    # 否则使用默认文件
+    # 否则使用默认文件（本地测试时）
     try:
-        if os.path.exists(default_excel_path):
-            df = read_excel_generate_data(default_excel_path)
-            st.sidebar.info(f"📂 使用默认文件: {default_excel_path}")
-        else:
-            st.sidebar.warning("⚠️ 未找到默认Excel文件，请上传文件")
+        df = read_excel_generate_data(default_excel_path)
+        st.sidebar.info(f"📂 使用默认文件: {default_excel_path}")
     except Exception as e:
         st.sidebar.error(f"❌ 默认文件加载失败: {str(e)}")
 
-# 提取Excel中的实际有效日期范围
+# 提取Excel中的实际有效日期范围（关键修改：自动获取日期最值）
 default_start_date = datetime.strptime("2026-01-05", "%Y-%m-%d").date()
 default_end_date = datetime.strptime("2026-01-19", "%Y-%m-%d").date()
 
@@ -304,46 +291,38 @@ if not df.empty and df["date"].notna().any():
 else:
     logger.warning("未提取到有效日期，使用兜底默认值")
 
-# ===================== 6. 侧边栏控件（修复Session State管理 - 简化版本） =====================
+# ===================== 6. 继续渲染侧边栏其他控件（使用自动提取的日期作为默认值） =====================
 with st.sidebar:
-    st.markdown("---")
-    
-    # 搜索区域：使用一个Session State变量简化管理
-    search_input = st.text_input(
+    # 搜索区域
+    search_keyword = st.text_input(
         "🔍 链路搜索（支持站点/流量类型关键词）",
-        value=st.session_state.search_keyword,  # 直接使用search_keyword
-        placeholder="输入关键词（如US/Shopify/DSP/站内）",
+        placeholder="输入关键词（如US/Shopify/DSP/页面总点击）",
         help="支持站点、流量类型关键词搜索"
     )
     
-    # 更新Session State
-    if search_input != st.session_state.search_keyword:
-        st.session_state.search_keyword = search_input
-    
-    # 清空搜索按钮 - 简化修复版本
+    # 清空搜索按钮
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🗑️ 清空搜索", type="secondary", use_container_width=True):
-            # 只清空search_keyword
-            st.session_state.search_keyword = ""
-            st.rerun()  # 刷新页面
+            search_keyword = ""
+            st.rerun()
     
     st.markdown("---")
     st.subheader("📅 日期范围")
     
-    # 日期输入
+    # 日期输入（关键修改：使用自动提取的日期作为默认值）
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input(
             "开始日期",
-            value=default_start_date,
+            value=default_start_date,  # 自动提取的最小日期
             help="默认显示Excel中的最早日期"
         )
     
     with col2:
         end_date = st.date_input(
             "结束日期",
-            value=default_end_date,
+            value=default_end_date,  # 自动提取的最大日期
             help="默认显示Excel中的最晚日期"
         )
     
@@ -505,8 +484,6 @@ for node in all_nodes:
     node_customdata.append((incoming, outgoing, ratio))
 
 # ===================== 11. 搜索关键词匹配 =====================
-# 从Session State读取搜索关键词
-search_keyword = st.session_state.get("search_keyword", "")
 search_keyword = search_keyword.strip().lower() if isinstance(search_keyword, str) else ""
 matched_traffic_types = []
 
