@@ -242,7 +242,7 @@ st.title("🌐 多站点流量-销量桑基图分析")
 st.markdown("---")
 
 # ===================== 5. 先处理文件上传和数据加载（关键修改：提前加载数据提取日期） =====================
-default_excel_path = "1.5-1.19流量数据统计.xlsx"
+default_excel_path = "1.5-1.19流量数据统计_数据表 2_表格 (1).xlsx"
 df = pd.DataFrame()
 
 with st.sidebar:
@@ -622,3 +622,4 @@ with st.expander("📋 查看详细数据"):
 st.markdown("---")
 st.caption(f"📅 数据更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 st.caption("💡 提示：修改Excel文件后，重新上传即可更新图表和默认日期范围")
+
